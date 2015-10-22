@@ -117,7 +117,6 @@ sub cmp_parse {
   #
   #  Do some setup
   #
-  my $current = Value->context; # save it for later
   my $context = $ans->{correct_value}{context} || $current;
   Parser::Context->current(undef,$context); # change to correct answser's context
   my $flags = contextSet($context,$self->cmp_contextFlags($ans)); # save old context flags
@@ -172,7 +171,6 @@ sub cmp_parse {
   }
   $context->{answerHash} = undef;
   contextSet($context,%{$flags});            # restore context values
-  Parser::Context->current(undef,$current);  # put back the old context
   return $ans;
 }
 
@@ -221,7 +219,7 @@ sub cmp_equal {
     $self->context->clearError();
     my $equal = $correct->cmp_compare($student,$ans);
     if ($self->context->{error}{flag} != $CMP_MESSAGE &&
-        (defined($equal) || !$ans->{showEqualErrors})) {$ans->score(1) if $equal; return}
+        (defined($equal) || !$ans->{showEqualErrors})) {$ans->score(0+$equal) if $equal; return}
     $self->cmp_error($ans);
   } else {
     return if $ans->{ignoreStrings} && (!Value::isValue($student) || $student->type eq 'String');
@@ -382,14 +380,19 @@ our $answerPrefix = "MaTrIx";
 #
 sub ans_matrix {
   my $self = shift;
-  my ($extend,$name,$rows,$cols,$size,$open,$close,$sep,$toplabels) = @_;
+  my $extend = shift; my $name = shift;
+  my $rows = shift; my $cols = shift;
+  my $size = shift; my $open = shift;
+  my $close = shift; my $sep = shift;
+  my $toplabels = shift;
+
+  my %options = @_;
+  #die(join(';',map {"$_ and $options{$_}"} keys %options));
   my $named_extension = pgRef('NAMED_ANS_ARRAY_EXTENSION');
   my $named_ans_rule  = pgRef('NAMED_ANS_RULE');
   my $HTML = ""; my $ename = $name;
-  if ($name eq '') {
-    $name = pgCall('NEW_ANS_NAME');
-    $ename = "${answerPrefix}_${name}";
-  }
+  $name = pgCall('NEW_ANS_NAME') if ($name eq '');
+  $ename = "${answerPrefix}_${name}";
   $self->{ans_name} = $ename;
   $self->{ans_rows} = $rows;
   $self->{ans_cols} = $cols;
@@ -397,14 +400,20 @@ sub ans_matrix {
   foreach my $i (0..$rows-1) {
     my @row = ();
     foreach my $j (0..$cols-1) {
+      my $label;
+      if ($options{aria_label}) {
+	$label = $options{aria_label}.'row '.($i+1).' col '.($j+1);
+      } else {
+	$label = pgCall('generate_aria_label',ANS_NAME($ename,$i,$j));
+      }
       if ($i == 0 && $j == 0) {
 	if ($extend) {
-	  push(@row,&$named_extension($name,$size,ans_label=>$name));
+	  push(@row,&$named_extension($name,$size,ans_label=>$name,aria_label=>$label));
 	} else {
-	  push(@row,&$named_ans_rule($name,$size));
+	  push(@row,&$named_ans_rule($name,$size,aria_label=>$label));
 	}
       } else {
-	push(@row,&$named_extension(ANS_NAME($ename,$i,$j),$size,ans_label=>$name));
+	push(@row,&$named_extension(ANS_NAME($ename,$i,$j),$size,ans_label=>$name,aria_label=>$label));
       }
     }
     push(@array,[@row]);
@@ -437,7 +446,7 @@ sub format_matrix_tex {
   my ($rows,$cols) = (scalar(@{$array}),scalar(@{$array->[0]}));
   my $tex = ""; my @rows = ();
   $open = '\\'.$open if $open =~ m/[{}]/; $close = '\\'.$close if $close =~ m/[{}]/;
-  $tex .= '\(\left'.$open;
+  $tex .= '\(\left'.$open.'\let\quad=\relax';  # WHY is there a \quad in the answer rule extension?
   $tex .= '\setlength{\arraycolsep}{2pt}', $sep = '\,'.$sep if $sep;
   $tex .= '\begin{array}{'.('c'x$cols).'}';
   if ($options{top_labels}) {
@@ -455,35 +464,31 @@ sub format_matrix_HTML {
   $self->{format_options} = [%options] unless $self->{format_options};
   my ($open,$close,$sep) = ($options{open},$options{close},$options{sep});
   my ($rows,$cols) = (scalar(@{$array}),scalar(@{$array->[0]}));
-  my $HTML = "";
-  if ($sep) {$sep = '</TD><TD STYLE="padding: 0px 1px">'.$sep.'</TD><TD>'
-  } else {
-  	$sep = '</TD><TD WIDTH="8px"></TD><TD>'
-  }
+  my $HTML = ""; my $class = 'class="ans_array_cell"';
+  my $cell = "display:table-cell;vertical-align:middle;"; my $pad = "padding:4px 0;";
+  if ($sep) {$sep = '<span class="ans_array_sep" style="'.$cell.'padding:0 2px">'.$sep.'</span>'}
+       else {$sep = '<span class="ans_array_sep" style="'.$cell.'width:8px"></span>'}
+  $sep = '</span>'.$sep.'<span '.$class.' style="'.$cell.$pad.'">';
   if ($options{top_labels} ) {
-  	$HTML.='<TR ALIGN="MIDDLE"><TD>'.join($sep,@{$options{top_labels}}).'</TD></TR>'."\n"
+    $HTML .= '<span style="display:table-row"><span '.$class.' style="'.$cell.$pad.'">'
+          .  join($sep,@{$options{top_labels}})
+          .  '</span></span>';
   }
   foreach my $i (0..$rows-1) {
-    $HTML .= '<TR><TD HEIGHT="6px"></TD></TR>' if $i;
-    $HTML .= '<TR ALIGN="MIDDLE"><TD>'.join($sep,EVALUATE(@{$array->[$i]})).'</TD></TR>'."\n";
+    $HTML .= '<span style="display:table-row"><span '.$class.' style="'.$cell.$pad.'">'
+          .   join($sep,EVALUATE(@{$array->[$i]}))
+          .  '</span></span>';
   }
+  $HTML = '<span class="ans_array_table" style="display:inline-table; vertical-align:middle">'.$HTML.'</span>';
   $open = $self->format_delimiter($open,$rows,$options{tth_delims});
   $close = $self->format_delimiter($close,$rows,$options{tth_delims});
   if ($open ne '' || $close ne '') {
-    $HTML = '<TR ALIGN="MIDDLE">'
-          . '<TD>'.$open.'</TD>'
-          . '<TD WIDTH="2"></TD>'
-          . '<TD><TABLE BORDER="0" CELLSPACING="0" CELLPADDING="0" CLASS="ArrayLayout">'
+    my $delim = "display:inline-block; vertical-align:middle;";
+    $HTML = '<span class="ans_array_open" style="'.$delim.' margin-right:4px">'.$open.'</span>'
           .   $HTML
-          . '</TABLE></TD>'
-          . '<TD WIDTH="4"></TD>'
-          . '<TD>'.$close.'</TD>'
-          . '</TR>'."\n";
+	  . '<span class="ans_array_close" style="'.$delim.' margin-left:4px">'.$close.'</span>'
   }
-  return '<TABLE BORDER="0" CELLSPACING="0" CELLPADDING="0" CLASS="ArrayLayout"'
-          . ' STYLE="display:inline-table;margin:0;vertical-align:-'.(1.1*$rows-.6).'em">'
-          . $HTML
-          . '</TABLE>';
+   return '<span class="ans_array" style="display:inline-block;vertical-align:.5ex">'.$HTML.'</span>';
 }
 
 sub EVALUATE {map {(Value::isFormula($_) && $_->isConstant? $_->eval: $_)} @_}
@@ -504,9 +509,9 @@ sub format_delimiter {
   my $displayMode = $self->getPG('$displayMode');
   return $self->format_delimiter_tth($delim,$rows,$tth)
     if $tth || $displayMode eq 'HTML_tth' || $displayMode !~ m/^HTML_/;
-  my $rule = '\vrule width 0pt height '.(.8*$rows).'em depth 0pt';
-  $rule = '\Rule{0pt}{'.(.8*$rows).'em}{0pt}' if $displayMode eq 'HTML_MathJax';
-  $rule = '\rule 0pt '.(.8*$rows).'em 0pt' if $displayMode eq 'HTML_jsMath';
+  my $rule = '\vrule width 0pt height '.$rows.'em depth 0pt';
+  $rule = '\Rule{0pt}{'.(1.2*$rows).'em}{0pt}' if $displayMode eq 'HTML_MathJax';
+  $rule = '\rule 0pt '.(1.2*$rows).'em 0pt' if $displayMode eq 'HTML_jsMath';
   $delim = '\\'.$delim if $delim eq '{' || $delim eq '}';
   return '\(\left'.$delim.$rule.'\right.\)';
 }
@@ -647,6 +652,7 @@ sub protectHTML {
 #
 sub preformat {
   my $string = protectHTML(shift);
+  $string = $string//'';
   $string =~ s!\n!<br />!g unless eval('$main::displayMode') eq 'TeX';
   $string;
 }
@@ -758,10 +764,16 @@ sub typeMatch {
 #
 #  Remove the blank-check prefilter when the string is empty,
 #  and add a filter that removes leading and trailing whitespace.
+#  Also, properly quote the correct answer string.
 #
 sub cmp {
   my $self = shift;
-  my $cmp = $self->SUPER::cmp(@_);
+  my $correct = ($self->{correct_ans}||$self->string);
+  my $cmp = $self->SUPER::cmp(
+    correct_ans => $self->quoteHTML($correct),
+    correct_ans_latex_string => $self->quoteTeX($correct),
+    @_
+  );
   if ($self->value =~ m/^\s*$/) {
     $cmp->install_pre_filter('erase');
     $cmp->install_pre_filter(sub {
@@ -772,6 +784,17 @@ sub cmp {
     });
   }
   return $cmp;
+}
+
+#
+#  Adjust student preview and anser strings so they display properly
+#
+sub cmp_preprocess {
+  my $self = shift; my $ans = shift;
+  if (defined $ans->{student_value}) {
+    $ans->{preview_latex_string} = $ans->{student_value}->TeX;
+    $ans->{student_ans} = $self->quoteHTML($ans->{student_value}->string);
+  }
 }
 
 #############################################################
@@ -836,9 +859,10 @@ sub ANS_MATRIX {
   my $self = shift;
   my $extend = shift; my $name = shift;
   my $size = shift || 5;
+  my %options = @_;
   my $def = $self->context->lists->get('Point');
   my $open = $self->{open} || $def->{open}; my $close = $self->{close} || $def->{close};
-  $self->ans_matrix($extend,$name,1,$self->length,$size,$open,$close,',');
+  $self->ans_matrix($extend,$name,1,$self->length,$size,$open,$close,',','',%options);
 }
 
 sub ans_array {my $self = shift; $self->ANS_MATRIX(0,'',@_)}
@@ -945,14 +969,16 @@ sub correct_ans {
 sub ANS_MATRIX {
   my $self = shift;
   my $extend = shift; my $name = shift;
-  my $size = shift || 5; my ($def,$open,$close);
+  my $size = shift || 5; 
+  my %options = @_;
+  my ($def,$open,$close);
   $def = $self->context->lists->get('Matrix');
   $open = $self->{open} || $def->{open}; $close = $self->{close} || $def->{close};
-  return $self->ans_matrix($extend,$name,$self->length,1,$size,$open,$close)
+  return $self->ans_matrix($extend,$name,$self->length,1,$size,$open,$close,'',,'',%options)
     if ($self->{ColumnVector});
   $def = $self->context->lists->get('Vector');
   $open = $self->{open} || $def->{open}; $close = $self->{close} || $def->{close};
-  $self->ans_matrix($extend,$name,1,$self->length,$size,$open,$close,',');
+  $self->ans_matrix($extend,$name,1,$self->length,$size,$open,$close,',','',%options);
 }
 
 sub ans_array {my $self = shift; $self->ANS_MATRIX(0,'',@_)}
@@ -1043,7 +1069,7 @@ sub ANS_MATRIX {
   Value::Error("Can't create ans_array for %d-dimensional matrix",scalar(@d))
     if (scalar(@d) > 2);
   @d = (1,@d) if (scalar(@d) == 1);
-  $self->ans_matrix($extend,$name,@d,$size,$open,$close,$sep,$toplabels);
+  $self->ans_matrix($extend,$name,@d,$size,$open,$close,$sep,$toplabels,%options);
 }
 
 sub ans_array {my $self = shift; $self->ANS_MATRIX(0,'',@_)}
@@ -1689,7 +1715,8 @@ sub cmp_postfilter {
   return $ans if $ans->{ans_message}; # don't overwrite other messages
   return $ans unless defined($ans->{prev_ans}); # if prefilters are erased, don't do this check
   my $context = $self->context;
-  $ans->{prev_formula} = Parser::Formula($context,$ans->{prev_ans});
+  Parser::Context->current(undef,$context);
+  $ans->{prev_formula} = Parser::Formula($ans->{prev_ans});
   if (defined($ans->{prev_formula}) && defined($ans->{student_formula})) {
     my $prev = eval {$self->promote($ans->{prev_formula})->inherit($self)}; # inherit limits, etc.
     next unless defined($prev);
@@ -2058,7 +2085,9 @@ sub correct_ans {
 sub ANS_MATRIX {
   my $self = shift;
   my $extend = shift; my $name = shift;
-  my $size = shift || 5; my $type = $self->type; 
+  my $size = shift || 5; 
+  my %options = @_;
+  my $type = $self->type; 
   my $cols = $self->length; my $rows = 1; my $sep = ',';
   if ($type eq 'Matrix') {
     $sep = ''; $rows = $cols; $cols = $self->{tree}->typeRef->{entryType}{length};
@@ -2071,7 +2100,7 @@ sub ANS_MATRIX {
   my $def = $self->context->lists->get($type);
   my $open = $self->{open} || $self->{tree}{open} || $def->{open};
   my $close = $self->{close} || $self->{tree}{close} || $def->{close};
-  $self->ans_matrix($extend,$name,$rows,$cols,$size,$open,$close,$sep);
+  $self->ans_matrix($extend,$name,$rows,$cols,$size,$open,$close,$sep,'',%options);
 }
 
 sub ans_array {
